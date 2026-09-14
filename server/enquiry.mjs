@@ -9,7 +9,9 @@ function allowedHostname(hostname) {
   return hostname === 'websolutionsydney.com.au' ||
     hostname.endsWith('.websolutionsydney.com.au') ||
     hostname === 'websolseo.pages.dev' ||
-    hostname.endsWith('.websolseo.pages.dev');
+    hostname.endsWith('.websolseo.pages.dev') ||
+    hostname === 'web-solution-sydney.pages.dev' ||
+    hostname.endsWith('.web-solution-sydney.pages.dev');
 }
 
 function value(...values) {
@@ -19,8 +21,8 @@ function value(...values) {
 function configuration(env, request) {
   const config = {
     resendKey: value(env.RESEND_API_KEY),
-    from: value(env.ENQUIRY_FROM, env.SEO_FROM_EMAIL, env.CONTACT_FROM_EMAIL, env.CONTACT_FORM_FROM_EMAIL, env.RESEND_FROM_EMAIL),
-    to: value(env.ENQUIRY_TO, env.SEO_ENQUIRY_TO_EMAIL, env.CONTACT_TO_EMAIL, env.CONTACT_EMAIL, env.RESEND_TO_EMAIL),
+    from: value(env.ENQUIRY_FROM, env.ENQUIRY_FROM_EMAIL, env.SEO_FROM_EMAIL, env.CONTACT_FROM_EMAIL, env.CONTACT_FORM_FROM_EMAIL, env.RESEND_FROM_EMAIL),
+    to: value(env.ENQUIRY_TO, env.ENQUIRY_TO_EMAIL, env.SEO_ENQUIRY_TO_EMAIL, env.CONTACT_TO_EMAIL, env.CONTACT_EMAIL, env.RESEND_TO_EMAIL),
     turnstileSecret: value(env.TURNSTILE_SECRET_KEY),
     turnstileSite: value(env.TURNSTILE_SITE_KEY, env.PUBLIC_TURNSTILE_SITE_KEY, env.VITE_TURNSTILE_SITE_KEY)
   };
