@@ -19,14 +19,13 @@ function value(...values) {
 }
 
 function configuration(env, request) {
-  const config = {
-    resendKey: value(env.RESEND_API_KEY),
-    from: value(env.ENQUIRY_FROM, env.ENQUIRY_FROM_EMAIL, env.SEO_FROM_EMAIL, env.CONTACT_FROM_EMAIL, env.CONTACT_FORM_FROM_EMAIL, env.RESEND_FROM_EMAIL),
-    to: value(env.ENQUIRY_TO, env.ENQUIRY_TO_EMAIL, env.SEO_ENQUIRY_TO_EMAIL, env.CONTACT_TO_EMAIL, env.CONTACT_EMAIL, env.RESEND_TO_EMAIL),
-    turnstileSecret: value(env.TURNSTILE_SECRET_KEY),
-    turnstileSite: value(env.TURNSTILE_SITE_KEY, env.PUBLIC_TURNSTILE_SITE_KEY, env.VITE_TURNSTILE_SITE_KEY)
-  };
-  if (Object.values(config).some(item => !item)) return null;
+  const resendKey = value(env.RESEND_API_KEY);
+  const from = value(env.ENQUIRY_FROM, env.ENQUIRY_FROM_EMAIL, env.SEO_FROM_EMAIL, env.CONTACT_FROM_EMAIL, env.CONTACT_FORM_FROM_EMAIL, env.RESEND_FROM_EMAIL);
+  const to = value(env.ENQUIRY_TO, env.ENQUIRY_TO_EMAIL, env.SEO_ENQUIRY_TO_EMAIL, env.CONTACT_TO_EMAIL, env.CONTACT_EMAIL, env.RESEND_TO_EMAIL);
+  const turnstileSecret = value(env.TURNSTILE_SECRET_KEY);
+  const turnstileSite = value(env.TURNSTILE_SITE_KEY, env.PUBLIC_TURNSTILE_SITE_KEY, env.VITE_TURNSTILE_SITE_KEY);
+  if (!resendKey || !from || !to) return null;
+  const config = { resendKey, from, to, turnstileSecret, turnstileSite };
   try {
     const site = new URL(request.url);
     return site.protocol === 'https:' && allowedHostname(site.hostname) ? config : null;
@@ -52,13 +51,18 @@ async function boundedBody(request) {
   return JSON.parse(new TextDecoder().decode(joined));
 }
 
-function validate(input) {
+function validate(input, requireToken) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
   const data = {};
-  for (const [key, minimum, maximum] of [['name',1,100],['business',1,150],['email',3,254],['service',1,50],['website',0,500],['message',10,4000],['token',1,2048],['requestId',36,36]]) {
+  for (const [key, minimum, maximum] of [['name',1,100],['business',1,150],['email',3,254],['service',1,50],['website',0,500],['message',10,4000],['requestId',36,36]]) {
     if (typeof input[key] !== 'string') return null;
     data[key] = input[key].trim();
     if (data[key].length < minimum || data[key].length > maximum) return null;
+  }
+  if (requireToken) {
+    if (typeof input.token !== 'string') return null;
+    data.token = input.token.trim();
+    if (data.token.length < 1 || data.token.length > 2048) return null;
   }
   if (input.company_url) return null;
   if (!services.has(data.service) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) return null;
@@ -74,7 +78,11 @@ function validate(input) {
 export async function handleEnquiry(request, env, fetcher = fetch) {
   if (!['GET', 'POST'].includes(request.method)) return json({ message: 'Method not allowed.' }, 405);
   const config = configuration(env, request);
-  if (request.method === 'GET') return json(config ? { enabled: true, siteKey: config.turnstileSite } : { enabled: false });
+  if (request.method === 'GET') {
+    if (!config) return json({ enabled: false });
+    const hasTurnstile = !!(config.turnstileSecret && config.turnstileSite);
+    return json({ enabled: true, siteKey: hasTurnstile ? config.turnstileSite : null, turnstile: hasTurnstile });
+  }
   if (!config) return json({ message: 'Direct sending is unavailable. Please email ryan@websolutionsydney.com.au.' }, 503);
   const origin = new URL(request.url).origin;
   if (request.headers.get('origin') !== origin) return json({ message: 'Please send the enquiry from our website.' }, 403);
@@ -82,20 +90,23 @@ export async function handleEnquiry(request, env, fetcher = fetch) {
   let input;
   try { input = await boundedBody(request); }
   catch (error) { return json({ message: 'Please check the form and shorten your message if needed.' }, error.message === 'too_large' ? 413 : 400); }
-  const data = validate(input);
-  if (!data) return json({ message: 'Please check the form fields and complete the security check again.' }, 400);
-  let verification;
-  try {
-    const response = await fetcher('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ secret: config.turnstileSecret, response: data.token, remoteip: request.headers.get('CF-Connecting-IP') || undefined }),
-      signal: AbortSignal.timeout(10000)
-    });
-    if (!response.ok) throw new Error('security_unavailable');
-    verification = await response.json();
-  } catch { return json({ message: 'The security check is unavailable. Please try again or email us.' }, 502); }
-  if (verification.success !== true || verification.hostname !== new URL(origin).hostname || verification.action !== 'enquiry') {
-    return json({ message: 'Please complete the security check again.' }, 400);
+  const useTurnstile = !!(config.turnstileSecret && config.turnstileSite);
+  const data = validate(input, useTurnstile);
+  if (!data) return json({ message: 'Please check the form fields and try again.' }, 400);
+  if (useTurnstile) {
+    let verification;
+    try {
+      const response = await fetcher('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ secret: config.turnstileSecret, response: data.token, remoteip: request.headers.get('CF-Connecting-IP') || undefined }),
+        signal: AbortSignal.timeout(10000)
+      });
+      if (!response.ok) throw new Error('security_unavailable');
+      verification = await response.json();
+    } catch { return json({ message: 'The security check is unavailable. Please try again or email us.' }, 502); }
+    if (verification.success !== true || verification.hostname !== new URL(origin).hostname || verification.action !== 'enquiry') {
+      return json({ message: 'Please complete the security check again.' }, 400);
+    }
   }
   const text = `Name: ${data.name}\nBusiness: ${data.business}\nReply email: ${data.email}\nService: ${data.service}\nWebsite: ${data.website || 'Not provided'}\n\n${data.message}`;
   try {

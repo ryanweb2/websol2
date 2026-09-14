@@ -4,6 +4,7 @@ import { handleEnquiry } from '../server/enquiry.mjs';
 
 const origin = 'https://websolutionsydney.com.au';
 const env = { PUBLIC_SITE_URL: origin, RESEND_API_KEY: 'test-secret-not-live', ENQUIRY_FROM: 'Website <forms@example.com>', ENQUIRY_TO: 'owner@example.com', TURNSTILE_SECRET_KEY: 'test-security-secret', TURNSTILE_SITE_KEY: 'test-public-key' };
+const envNoTurnstile = { RESEND_API_KEY: 'test-secret-not-live', ENQUIRY_FROM: 'Website <forms@example.com>', ENQUIRY_TO: 'owner@example.com' };
 const fields = { name: 'Test User', business: 'Test Business', email: 'visitor@example.com', service: 'New website', website: '', message: 'Please discuss a business website.', token: 'test-token', requestId: 'ea616011-a221-4098-9b8f-6ff5ebefcc6c', company_url: '' };
 const verified = { success: true, hostname: 'websolutionsydney.com.au', action: 'enquiry' };
 function request(data = fields, overrides = {}) {
@@ -24,14 +25,18 @@ test('unconfigured form disables direct delivery and makes no external calls', a
   assert.equal((await handleEnquiry(request(), {}, n.fetcher)).status, 503);
   assert.equal(n.calls.length, 0);
 });
-test('configuration exposes only the public site key', async () => {
+test('configuration with turnstile exposes the public site key', async () => {
   const response = await handleEnquiry(new Request(origin + '/api/enquiry'), env);
-  assert.deepEqual(await response.json(), { enabled: true, siteKey: 'test-public-key' });
+  assert.deepEqual(await response.json(), { enabled: true, siteKey: 'test-public-key', turnstile: true });
   assert.equal(response.headers.get('cache-control'), 'no-store');
+});
+test('configuration without turnstile enables form with turnstile false', async () => {
+  const response = await handleEnquiry(new Request(origin + '/api/enquiry'), envNoTurnstile);
+  assert.deepEqual(await response.json(), { enabled: true, siteKey: null, turnstile: false });
 });
 test('configuration works on owned subdomains', async () => {
   const response = await handleEnquiry(new Request('https://websol.websolutionsydney.com.au/api/enquiry'), env);
-  assert.deepEqual(await response.json(), { enabled: true, siteKey: 'test-public-key' });
+  assert.deepEqual(await response.json(), { enabled: true, siteKey: 'test-public-key', turnstile: true });
 });
 test('configuration accepts common contact-form variable names', async () => {
   const aliases = {
@@ -42,7 +47,7 @@ test('configuration accepts common contact-form variable names', async () => {
     VITE_TURNSTILE_SITE_KEY: env.TURNSTILE_SITE_KEY
   };
   const response = await handleEnquiry(new Request('https://websol.websolutionsydney.com.au/api/enquiry'), aliases);
-  assert.deepEqual(await response.json(), { enabled: true, siteKey: 'test-public-key' });
+  assert.deepEqual(await response.json(), { enabled: true, siteKey: 'test-public-key', turnstile: true });
 });
 test('configuration accepts the existing SEO form variable names', async () => {
   const aliases = {
@@ -53,7 +58,16 @@ test('configuration accepts the existing SEO form variable names', async () => {
     VITE_TURNSTILE_SITE_KEY: env.TURNSTILE_SITE_KEY
   };
   const response = await handleEnquiry(new Request('https://websol.websolutionsydney.com.au/api/enquiry'), aliases);
-  assert.deepEqual(await response.json(), { enabled: true, siteKey: 'test-public-key' });
+  assert.deepEqual(await response.json(), { enabled: true, siteKey: 'test-public-key', turnstile: true });
+});
+test('configuration accepts ENQUIRY_FROM_EMAIL and ENQUIRY_TO_EMAIL aliases', async () => {
+  const aliases = {
+    RESEND_API_KEY: env.RESEND_API_KEY,
+    ENQUIRY_FROM_EMAIL: env.ENQUIRY_FROM,
+    ENQUIRY_TO_EMAIL: env.ENQUIRY_TO,
+  };
+  const response = await handleEnquiry(new Request('https://websol.websolutionsydney.com.au/api/enquiry'), aliases);
+  assert.deepEqual(await response.json(), { enabled: true, siteKey: null, turnstile: false });
 });
 test('preview hostname does not enable production email sending', async () => {
   const response = await handleEnquiry(new Request('https://preview.example.com/api/enquiry'), env);
@@ -115,4 +129,14 @@ test('valid request uses fixed recipient, visitor reply-to, plain text and idemp
   assert.equal(email.html, undefined);
   assert.ok(email.text.includes(fields.message));
   assert.equal(n.calls[1].headers['Idempotency-Key'], 'wss-enquiry/' + fields.requestId);
+});
+test('valid request without turnstile sends email directly', async () => {
+  const n = network();
+  const fieldsNoToken = { ...fields };
+  delete fieldsNoToken.token;
+  const response = await handleEnquiry(request(fieldsNoToken), envNoTurnstile, n.fetcher);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { status: 'accepted' });
+  assert.equal(n.calls.length, 1);
+  assert.ok(n.calls[0].url.includes('resend.com'));
 });
